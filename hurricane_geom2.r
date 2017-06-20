@@ -105,8 +105,8 @@ hurricane_proto <- ggproto("hurricane_proto", Geom, required_aes = c("x", "y",
                                                                     r_se = ~r_se * nauticalConv * scale_radii,
                                                                     r_sw = ~r_sw * nauticalConv * scale_radii,
                                                                     r_nw = ~r_nw * nauticalConv * scale_radii)
+                                           #making alpha available to grob
                                            dat$alpha <- as.numeric(default_aes$alpha)
-                                           #print(dat$alpha)
                                            # Creating vertices in each quadrant
                                            apply(dat, 1, function(i) {
                                              nw <- data.frame(colour = i[["colour"]],
@@ -118,7 +118,6 @@ hurricane_proto <- ggproto("hurricane_proto", Geom, required_aes = c("x", "y",
                                                                        PANEL = i[["PANEL"]],
                                                                        alpha = i[["alpha"]]
                                              )
-                                             print(class(i[["alpha"]]))
                                              ne <- data.frame(colour = i[["colour"]],
                                                                        fill = i[["fill"]],
                                                                        geosphere::destPoint(p = c(i["x"], i["y"]),
@@ -146,26 +145,21 @@ hurricane_proto <- ggproto("hurricane_proto", Geom, required_aes = c("x", "y",
                                                                  PANEL = i[["PANEL"]],
                                                                  alpha = i[["alpha"]]
                                              )
-                                             #print(list(nw, ne, se, sw))
-                                             points <- bind_rows(nw, ne, se, sw)
-                                             #print(points)
-                                           # Rename long and lat to x and y
-                                           points <- points %>% rename('x' = 'lon', 'y' = 'lat')
-                                           #print(panel_scales)
-                                           #names(points)[names(points) == 'x'] <- 'lon'
-                                           #names(points)[names(points) == 'y'] <- 'lat'
-                                           # Correct for color read in
-                                           points$colour <- as.character(points$colour)
-                                           points$fill <- as.character(points$fill)
-                                           coords <<- coord$transform(points, panel_scales)
+                                             vertices <- bind_rows(nw, ne, se, sw)
+                                           # Renaming from ggproto required names
+                                           vertices <- vertices %>% rename('x' = 'lon', 'y' = 'lat')
+                                           # Correcting AES
+                                           vertices$colour <- as.character(vertices[,'colour'])
+                                           vertices$fill <- as.character(vertices[,'fill'])
+                                           vertices$alpha <- as.character(vertices[,'alpha'])
+                                           #bad habit below
+                                           coords <<- coord$transform(vertices, panel_scales)
                                            })
-                                           print(coords$alpha)
-                                           ## Construct grid polygon
                                            polygonGrob(
                                              x= coords$x,
                                              y = coords$y,
                                              gp = gpar(col = coords$colour, fill = coords$fill, 
-                                                             alpha = as.numeric(coords$alpha))
+                                                             alpha = coords$alpha)
                                            )
                                          }
                                          
