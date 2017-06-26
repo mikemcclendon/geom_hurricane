@@ -1,12 +1,17 @@
 
+library(dplyr)
 #' make_ext_tracks
 #'
 #'This is a function that reads in Extended Best Tract hurricane data and tidies 
 #'it into a format to use for visualization
 #'
+#' @params NULL
+#'
 #' @return Returns a tidied data frame object
 #' 
-#' @importFrom readr, dplyr, lubridate
+#' @importFrom readr read_fwf, fwf_widths
+#' @importFrom dplyr mutate, gather, unite, %>%, spread, gather
+#' @importFrom lubridate ymd_h
 #' 
 #' @export
 #'
@@ -25,7 +30,7 @@ make_ext_tracks <- function() {
                            "storm_type", "distance_to_land", "final")
   
   ext_tracks <- readr::read_fwf("ebtrk_atlc_1988_2015.txt", 
-                         fwf_widths(ext_tracks_widths, ext_tracks_colnames),
+                         readr::fwf_widths(ext_tracks_widths, ext_tracks_colnames),
                          na = "-99")
 
   ext_tracks <- ext_tracks %>%
@@ -54,7 +59,8 @@ make_ext_tracks <- function() {
 #'
 #' @return data frame containing observation of a single storm
 #' 
-#' @importFrom dplyr, lubridate
+#' @importFrom dplyr %>%
+#' @importFrom lubridate ymd_h
 #' 
 #' @export
 #'
@@ -65,153 +71,68 @@ get_storm_observation <- function(data = make_ext_tracks(), name="IKE-2008", dt=
   data %>% 
     dplyr::filter(storm_id == name & date == dt)}
 
-getLonRadius <- function(origin, distance, delta, scale=1) {
-  p <- destPoint(origin, 0, 1852 * distance)
-  diff <- p[,2] - origin[2] 
-  res <- diff * delta * scale 
-  return (res)
-}
-
-get_radius <- function(origin, distance, delta, scale) {
-    p <- destPoint(origin, 90, 1852 * distance)
-    diff <- p[,1] - origin[1] 
-    res <- diff * delta * scale 
-    return (res)
-}
-
-#' hurricane_proto
+#' hurrican_proto
 #' 
-#' Constructs a hurricane ggproto object
+#' Function to create a hurricane ggproto object
 #'
-#' @return ggproto object
-#' 
-#' @importFrom ggplot2, grid, geosphere
+#' @param required_aes required aesthetic arguments 
+#' @param default_aes default aesthetic values 
+#' @param draw_key  function to draw the legend 
+#' @param draw_group constructing the geom
+#'
+#' @importFrom dplyr, dplyr, grid, 
 #' 
 #' @export
 #'
-#' @examples hurricane_proto
+#' @examples geom_hurricane(data = storm_observation,
+#' ggplot2::aes(x = longitude, y = latitude, 
+#'             r_ne = ne, r_se = se, r_nw = nw, r_sw = sw,
+#'             fill = wind_speed, color = wind_speed, scale_radii = 1)) + 
+#'  ggplot2::scale_color_manual(name = "Wind speed (kts)", 
+#'                              values = c("red", "orange", "yellow")) + 
+#'  ggplot2::scale_fill_manual(name = "Wind speed (kts)", 
+#'                             values = c("red", "orange", "yellow"))
 
-hurricane_proto <- ggproto("geomHurricane", GeomPolygon,
-                         required_aes = c("x", "y", "r_ne", "r_se", "r_nw", "r_sw"),
-                         default_aes = aes(fill = 1, colour = 1,  size=0.5, linetype=1, 
-                                           alpha = .7, scale_radii = 1),
-                         draw_key = draw_key_polygon,
-                         draw_panel = function(data, panel_scales, coord) {
+
+
+hurricane_proto <- ggplot2::ggproto("hurricane_proto", ggplot2::Geom, required_aes = c("x", "y","r_ne", "r_se", "r_nw", "r_sw"),
+                           default_aes = ggplot2::aes(fill="red", colour="red", size=0.5, linetype=1, alpha=.5, arc_step=1, 
+                                             scale_radii=1),
+                           draw_key = ggplot2::draw_key_polygon,
+                           draw_group = function(dat, panel_scales, coord) {
+                             #Correcting for nautical miles to meters
+                             vars <- names(dat)[5:8]
+                             dat <- dat %>% dplyr::mutate_at(vars, funs(. * scale_radii * 1852))
+                             #Creating vertices in each quadrant
+                             apply(dat, 1, function(i) {
+                               nw <- data.frame(geosphere::destPoint(p = c(i["x"], i["y"]),b = 271:360, d = i["r_nw"]))
+                               ne <- data.frame(geosphere::destPoint(p = c(i["x"], i["y"]), b = 1:90,d = i["r_ne"]))
+                               se <- data.frame(geosphere::destPoint(p = c(i["x"], i["y"]), b = 91:180, d = i["r_se"]))
+                               sw <- data.frame(geosphere::destPoint(p = c(i["x"], i["y"]), b = 181:270, d = i["r_sw"]))
+                               #Filling in AES for each quadrant 
+                               specs <- data.frame(colour = rep(i[["colour"]], times = 360), fill = rep(i[["fill"]], times = 360),
+                                                   alpha = rep(i[["alpha"]], times = 360), group = rep(i[["group"]], times = 360), 
+                                                   PANEL = rep(i[["PANEL"]], times = 360))
+                               specs[,1:2] <- apply(specs[,1:2], 1, as.character)
+                               vertices <- bind_rows(nw, ne, se, sw) 
+                               vertices <- cbind(vertices, specs)
+                               #Renaming from ggproto required names
+                               vertices <- vertices %>% rename('x' = 'lon', 'y' = 'lat')
+                               #Correcting format of AES
+                               vertices$alpha <- as.character(vertices[,'alpha'])
+                               #bad habit below
+                               coords <<- coord$transform(vertices, panel_scales)
+                             })
+                             grid::polygonGrob(
+                               x= coords$x,
+                               y = coords$y,
+                               gp = grid::gpar(col = coords$colour, fill = coords$fill, 
+                                         alpha = coords$alpha)
+                             )
+                           }
                            
-                           coords <- coord$transform(data, panel_scales)
-                           scale <- panel_scales
-                           origin <- c(data["x"][1,], data["y"][1,])
-                           cc <- coords$colour
-                           
-                           vx <- coords$x[1]
-                           vy <- coords$y[1]
-                           
-                           deltaX <- abs(1 / diff(scale$x.range))
-                           deltaY <- abs(1 / diff(scale$y.range))
-                           
-                           v1<- viewport(x=vx,y=vy,width=1,height=1,just=c("left","bottom"), clip="on")
-                           v2<- viewport(x=vx,y=vy,width=-1,height=1,just=c("left","bottom"), clip="on")
-                           v3<- viewport(x=vx,y=vy,width=-1,height=-0.75,just=c("left","bottom"), clip="on")
-                           v4<- viewport(x=vx,y=vy,width=1,height=-0.75, just=c("left", "bottom"), clip="on")
-                           
-                           c1 <- circleGrob(
-                             x = 0,
-                             y = 0,
-                             vp=v1,
-                             r = get_radius(origin, coords$r_ne, deltaX, coords$scale_radii),
-                             gp = gpar(col = cc, fill= cc, lty = "solid", lwd = 1, fontsize = 16, alpha = .7)
-                           )
-                           c2 <- circleGrob(
-                             x = 0,
-                             y = 0,
-                             vp=v2,
-                             r = get_radius(origin, coords$r_nw, deltaX, coords$scale_radii),
-                             
-                             gp = gpar(col = cc, fill= cc, lty = "solid", lwd = 1, fontsize = 16, alpha = .7)
-                           )
-                           c3 <- circleGrob(
-                             x = 0,
-                             y = 0,
-                             r = get_radius(origin, coords$r_sw, deltaX, coords$scale_radii),
-                             vp = v3,
-                             gp = gpar(col = cc, fill= cc, lty = "solid", lwd = 1, fontsize = 16, alpha = .7)
-                           )
-                           c4 <- circleGrob(
-                             x = 0,
-                             y = 0,
-                             r = get_radius(origin, coords$r_se, deltaX, coords$scale_radii),
-                             vp = v4,
-                             gp = gpar(col = cc, fill= cc, lty = "solid", lwd = 1, fontsize = 16, alpha = .7)
-                           )
-                           
-                           grobTree(c1, c2, c3, c4)
-                         }
 )
 
-
-
-
-# hurricane_proto <- ggplot2::ggproto("hurricane_proto", Geom, required_aes = c("x", "y",
-#                                                           "r_ne", "r_se", "r_nw", "r_sw"),
-#                                          default_aes = aes(fill = 1, colour = 1,  size=0.5,
-#                                                            linetype=1, alpha = 1, scale_radii = 1),
-#                                          draw_key = draw_key_polygon,
-#                                          draw_group = function(data, panel_scales, coord) {
-#                                            ## Transform data
-#                                            coordinates <- coord$transform(data, panel_scales)
-#                                            nauticalConv <- 1852
-#                                            data <- data %>% dplyr::mutate_(r_ne = ~r_ne * nauticalConv * scale_radii,
-#                                                                     r_se = ~r_se * nauticalConv * scale_radii,
-#                                                                     r_sw = ~r_sw * nauticalConv * scale_radii,
-#                                                                     r_nw = ~r_nw * nauticalConv * scale_radii
-#                                            )
-#                                            for (i in 1:nrow(data)) {
-#                                              ne <- data.frame(colour = data[i,]$colour, fill = data[i,]$fill,
-#                                                                        geosphere::destPoint(p = c(data[i,]$x, data[i,]$y),
-#                                                                                             b = 1:90,
-#                                                                                             d = data[i,]$r_ne),
-#                                                                        group = data[i,]$group, PANEL = data[i,]$PANEL,
-#                                                                        alpha = data[i,]$alpha
-#                                              )
-#                                              nw <- data.frame(colour = data[i,]$colour, fill = data[i,]$fill,
-#                                                               geosphere::destPoint(p = c(data[i,]$x, data[i,]$y),
-#                                                                                    b = 270:360,
-#                                                                                    d = data[i,]$r_nw),
-#                                                               group = data[i,]$group, PANEL = data[i,]$PANEL,
-#                                                               alpha = data[i,]$alpha
-#                                              )
-#                                              se <- data.frame(colour = data[i,]$colour, fill = data[i,]$fill,
-#                                                                        geosphere::destPoint(p = c(data[i,]$x, data[i,]$y),
-#                                                                                             b = 90:180,
-#                                                                                             d = data[i,]$r_se),
-#                                                                        group = data[i,]$group, PANEL = data[i,]$PANEL,
-#                                                                        alpha = data[i,]$alpha
-#                                              )
-#                                              sw <- data.frame(colour = data[i,]$colour,fill = data[i,]$fill,
-#                                                                  geosphere::destPoint(p = c(data[i,]$x, data[i,]$y),
-#                                                                                       b = 180:270,
-#                                                                                       d = data[i,]$r_sw),
-#                                                                  group = data[i,]$group,PANEL = data[i,]$PANEL,
-#                                                                  alpha = data[i,]$alpha
-#                                              )
-#                                              verts <- dplyr::bind_rows(list(nw, ne, se, sw))
-#                                            }
-#                                            # Rename long and lat to x and y
-#                                            verts <- verts %>% dplyr::rename_('x' = 'lon', 'y' = 'lat')
-#                                            # Correct for color read in
-#                                            verts$colour <- as.character(verts$colour)
-#                                            verts$fill <- as.character(verts$fill)
-#                                            coordinates <- coord$transform(verts, panel_scales)
-#                                            ## Construct grid polygon
-#                                            grid::polygonGrob(
-#                                              x= coordinates$x,
-#                                              y = coordinates$y,
-#                                              gp = gpar(col = coordinates$colour, fill = coordinates$fill, 
-#                                                              alpha = coordinates$alpha)
-#                                            )
-#                                          }
-#                                          
-# )
 
 #' geom_hurricane
 #' 
@@ -244,10 +165,13 @@ geom_hurricane <- function(mapping = NULL, data = NULL, stat = 'identity',
 #' hurricane_plot
 #' 
 #' Returns plot of hurricane
+#' 
+#' @param storm_observation A tidied observation of a single storm at a single time containing long, lat, and windspeed data
 #'
 #' @return ggplot of hurricane
 #' 
-#' @importFrom ggmap, ggplot
+#' @importFrom ggmap ggmap, get_map
+#' @importFrom ggplot2 aes, scale_color, scale_fill_manual 
 #' 
 #' @export
 #'
@@ -255,12 +179,13 @@ geom_hurricane <- function(mapping = NULL, data = NULL, stat = 'identity',
 
 #modified from provided code TO DEMONSTRATE WORKING SCALE_RADII
 hurricane_plot <- ggmap::get_map("Louisiana", zoom = 6, maptype = "toner-background") %>%
-  ggmap(extent = "device") +
+  ggmap::ggmap(extent = "device") +
   geom_hurricane(data = storm_observation,
-                 aes(x = longitude, y = latitude, 
+                 ggplot2::aes(x = longitude, y = latitude, 
                      r_ne = ne, r_se = se, r_nw = nw, r_sw = sw,
                      fill = wind_speed, color = wind_speed, scale_radii = 1)) + 
-  scale_color_manual(name = "Wind speed (kts)", 
+  ggplot2::scale_color_manual(name = "Wind speed (kts)", 
                      values = c("red", "orange", "yellow")) + 
-  scale_fill_manual(name = "Wind speed (kts)", 
+  ggplot2::scale_fill_manual(name = "Wind speed (kts)", 
                     values = c("red", "orange", "yellow"))
+
